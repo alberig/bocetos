@@ -1,0 +1,19 @@
+{
+  "name": "Bocetos - Cuadrícula y Superposición para Artistas",
+  "short_name": "Bocetos",
+  "description": "Herramienta de precisión para dibujo y pintura con método de cuadrícula y superposición iterativa.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#121212",
+  "theme_color": "#121212",
+  "icons": [
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
+

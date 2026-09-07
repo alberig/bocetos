@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  
+  <!-- PWA & iPadOS Fullscreen Settings -->
+  <title>Bocetos - Cuadrícula y Superposición para Artistas</title>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Bocetos">
+  <meta name="theme-color" content="#121212">
+  <link rel="apple-touch-icon" href="icons/icon.svg">
+  <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+  <link rel="manifest" href="manifest.json">
+
+  <!-- Estilos -->
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <div id="app-root">
+
+    <!-- ========================================================
+         VISTA 1: GALERÍA DE PROYECTOS ("MIS RETRATOS")
+         ======================================================== -->
+    <section id="gallery-view" class="view-container gallery-view active">
+      <header class="gallery-header">
+        <div class="gallery-title-group">
+          <img src="icons/icon.svg" alt="Bocetos Logo" class="app-brand-logo">
+          <div>
+            <h1>Mis Retratos</h1>
+            <p>Proyectos de pintura y dibujo con método de cuadrícula</p>
+          </div>
+        </div>
+      </header>
+
+      <main class="gallery-grid" id="gallery-projects-list">
+        <!-- Las tarjetas se generan dinámicamente desde js/app.js -->
+      </main>
+    </section>
+
+    <!-- ========================================================
+         VISTA 2: ESTUDIO DE TRABAJO (CANVAS Y PANELES)
+         ======================================================== -->
+    <section id="studio-view" class="view-container studio-view">
+
+      <!-- Botón Flotante Modo "Lienzo Limpio" (Zen Mode) -->
+      <button id="btn-toggle-clean-mode" class="clean-canvas-btn" title="Modo Lienzo Limpio" aria-label="Modo Lienzo Limpio">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>
+        </svg>
+      </button>
+
+      <!-- Barra Superior de Estudio -->
+      <header class="studio-topbar">
+        <div class="topbar-left">
+          <button id="btn-back-gallery" class="btn-secondary" title="Volver a la galería">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M19 12H5M12 19l-7-7 7-7"/>
+            </svg>
+            <span>Galería</span>
+          </button>
+        </div>
+
+        <div class="topbar-center">
+          <div class="project-title-btn" id="project-title-btn">
+            <span id="project-title-text">Proyecto</span>
+          </div>
+        </div>
+
+        <div class="topbar-right">
+          <!-- Botón de Exportar Imagen Combinada -->
+          <button id="btn-export-canvas" class="btn-icon" title="Exportar / Guardar Comparativa" aria-label="Exportar">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+            </svg>
+          </button>
+
+          <!-- Toggles rápidos de visibilidad de las 3 capas -->
+          <div class="layer-toggles-bar">
+            <button class="layer-chip active ref-chip" id="chip-toggle-ref" title="Ocultar/Mostrar Referencia">
+              <span>Ref</span>
+            </button>
+            <button class="layer-chip active grid-chip" id="chip-toggle-grid" title="Ocultar/Mostrar Cuadrícula">
+              <span>Grid</span>
+            </button>
+            <button class="layer-chip active sketch-chip" id="chip-toggle-sketch" title="Ocultar/Mostrar Boceto">
+              <span>Boceto</span>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <!-- Área Central del Canvas -->
+      <main class="canvas-container">
+        <canvas id="main-canvas"></canvas>
+      </main>
+
+      <!-- Panel Flotante: Configuración de Cuadrícula -->
+      <div class="floating-side-panel" id="panel-grid-settings">
+        <div class="panel-header">
+          <h3>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-cyan)" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <path d="M3 9h18M3 15h18M9 3v18M15 3v18" />
+            </svg>
+            Ajustes de Cuadrícula
+          </h3>
+          <button class="panel-close-btn" aria-label="Cerrar">&times;</button>
+        </div>
+
+        <div class="control-row">
+          <span class="control-label">Filas:</span>
+          <div class="stepper-container">
+            <button class="stepper-btn" id="btn-rows-minus">−</button>
+            <span class="stepper-value" id="rows-value-display">4</span>
+            <button class="stepper-btn" id="btn-rows-plus">+</button>
+          </div>
+        </div>
+
+        <div class="control-row">
+          <span class="control-label">Columnas:</span>
+          <div class="stepper-container">
+            <button class="stepper-btn" id="btn-cols-minus">−</button>
+            <span class="stepper-value" id="cols-value-display">4</span>
+            <button class="stepper-btn" id="btn-cols-plus">+</button>
+          </div>
+        </div>
+
+        <div class="control-row">
+          <span class="control-label">Color de Línea:</span>
+          <div class="color-picker-row">
+            <div class="color-dot active" data-color="#00e5ff" style="background-color: #00e5ff;" title="Cian neón"></div>
+            <div class="color-dot" data-color="#ff5252" style="background-color: #ff5252;" title="Rojo contraste"></div>
+            <div class="color-dot" data-color="#34c759" style="background-color: #34c759;" title="Verde neón"></div>
+            <div class="color-dot" data-color="#ffffff" style="background-color: #ffffff;" title="Blanco puro"></div>
+            <div class="color-dot" data-color="#ffd60a" style="background-color: #ffd60a;" title="Amarillo oro"></div>
+            <div class="color-dot" data-color="#000000" style="background-color: #000000; border: 1px solid #444;" title="Negro"></div>
+          </div>
+        </div>
+
+        <div class="control-row">
+          <span class="control-label">Grosor:</span>
+          <input type="range" id="grid-line-width" min="1" max="6" step="0.5" value="2">
+        </div>
+
+        <div class="control-row">
+          <span class="control-label">Diagonales (Encaje):</span>
+          <label class="switch">
+            <input type="checkbox" id="toggle-grid-diagonals">
+            <span class="slider-toggle"></span>
+          </label>
+        </div>
+
+        <div class="control-row">
+          <span class="control-label">Letras y Números:</span>
+          <label class="switch">
+            <input type="checkbox" id="toggle-grid-labels" checked>
+            <span class="slider-toggle"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Panel Flotante: Ajustes del Boceto y Fusión -->
+      <div class="floating-side-panel" id="panel-sketch-settings">
+        <div class="panel-header">
+          <h3>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-amber)" stroke-width="2">
+              <circle cx="12" cy="12" r="9"/>
+              <path d="M12 3a9 9 0 0 0 0 18v-18z"/>
+            </svg>
+            Ajustes de Boceto & Fusión
+          </h3>
+          <button class="panel-close-btn" aria-label="Cerrar">&times;</button>
+        </div>
+
+        <!-- Opacidad de la superposición -->
+        <div class="control-row">
+          <span class="control-label">Opacidad:</span>
+          <div class="control-input-group">
+            <input type="range" id="sketch-opacity-slider" min="0" max="1" step="0.02" value="0.65">
+            <span id="sketch-opacity-value" style="font-weight: 700; min-width: 44px; text-align: right;">65%</span>
+          </div>
+        </div>
+
+        <!-- Modo de Fusión Canvas/CSS -->
+        <div class="control-row">
+          <span class="control-label">Modo de Fusión:</span>
+          <select id="sketch-blend-select" class="custom-select">
+            <option value="difference" selected>Diferencia (Líneas Clave)</option>
+            <option value="multiply">Multiplicar (Papel Cebolla)</option>
+            <option value="normal">Normal (Transparente)</option>
+            <option value="screen">Trama (Aclarar)</option>
+            <option value="overlay">Superponer (Contraste)</option>
+          </select>
+        </div>
+
+        <!-- Microajuste de Escala -->
+        <div class="control-row">
+          <span class="control-label">Escala fina:</span>
+          <div class="stepper-container">
+            <button class="stepper-btn" id="btn-scale-minus">−</button>
+            <span class="stepper-value" id="scale-value-display">100%</span>
+            <button class="stepper-btn" id="btn-scale-plus">+</button>
+          </div>
+        </div>
+
+        <!-- Microajuste de Rotación -->
+        <div class="control-row">
+          <span class="control-label">Rotación fina:</span>
+          <div class="stepper-container">
+            <button class="stepper-btn" id="btn-rot-minus">↺</button>
+            <span class="stepper-value" id="rot-value-display">0°</span>
+            <button class="stepper-btn" id="btn-rot-plus">↻</button>
+          </div>
+        </div>
+
+        <!-- Volteo y Reset -->
+        <div class="control-row" style="margin-top: 4px;">
+          <button id="btn-flip-h" class="btn-secondary" style="flex: 1;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M8 3H5a2 2 0 0 0-2 2v14c0 1.1.9 2 2 2h3m8-18h3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-3M12 2v20"/>
+            </svg>
+            Voltear H
+          </button>
+          <button id="btn-reset-transform" class="btn-secondary" style="flex: 1;">
+            Restablecer
+          </button>
+          <button id="btn-delete-iteration" class="btn-icon" title="Eliminar esta versión" style="color: var(--accent-red);">
+            🗑
+          </button>
+        </div>
+      </div>
+
+      <!-- Muelle Inferior (Dock de Herramientas & Timeline) -->
+      <footer class="dock-bottom">
+
+        <!-- Timeline de Versiones/Iteraciones -->
+        <div class="timeline-card">
+          <!-- Botón de Captura Directa con Cámara del iPad -->
+          <button id="btn-capture-sketch" class="btn-capture-camera" title="Tomar foto directa con cámara">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+              <circle cx="12" cy="13" r="4"/>
+            </svg>
+            <span>Tomar Foto</span>
+          </button>
+
+          <!-- Botón alternativo para elegir de fototeca / archivos -->
+          <button id="btn-upload-sketch-file" class="btn-icon" title="Cargar desde fototeca o archivos" style="flex-shrink: 0;" aria-label="Elegir de fototeca">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+              <circle cx="8.5" cy="8.5" r="1.5"/>
+              <polyline points="21 15 16 10 5 21"/>
+            </svg>
+          </button>
+
+          <!-- Input nativo de cámara con capture="environment" -->
+          <input type="file" id="input-camera-capture" accept="image/*" capture="environment" class="visually-hidden">
+          <input type="file" id="input-file-fallback" accept="image/*" class="visually-hidden">
+
+          <!-- Lista horizontal scrolleable de iteraciones -->
+          <div class="timeline-scroll-container" id="timeline-items">
+            <!-- Iteraciones generadas dinámicamente -->
+          </div>
+        </div>
+
+        <!-- Pestañas de Herramientas Rápidas -->
+        <div class="tool-tabs-bar">
+          <button class="tool-tab-btn" id="tab-btn-grid">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <path d="M3 9h18M3 15h18M9 3v18M15 3v18"/>
+            </svg>
+            <span>Cuadrícula</span>
+          </button>
+          <button class="tool-tab-btn" id="tab-btn-sketch">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="9"/>
+              <path d="M12 3a9 9 0 0 0 0 18v-18z"/>
+            </svg>
+            <span>Alineación & Fusión</span>
+          </button>
+        </div>
+
+      </footer>
+
+    </section>
+
+    <!-- ========================================================
+         MODAL: NUEVO PROYECTO
+         ======================================================== -->
+    <div class="modal-backdrop" id="modal-new-project">
+      <div class="modal-card">
+        <h2>Nuevo Retrato / Proyecto</h2>
+
+        <div class="form-field">
+          <label for="input-project-name">Nombre del Proyecto</label>
+          <input type="text" id="input-project-name" class="text-input" placeholder="Ej. Retrato al Óleo de María" autocomplete="off">
+        </div>
+
+        <div class="form-field">
+          <label>Foto de Referencia Inicial</label>
+          <div class="dropzone-box" id="ref-dropzone">
+            <div id="ref-placeholder-text">
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="var(--accent-cyan)" stroke-width="2" style="margin-bottom: 8px;">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                <circle cx="8.5" cy="8.5" r="1.5"/>
+                <polyline points="21 15 16 10 5 21"/>
+              </svg>
+              <p style="font-weight: 600; color: var(--text-primary);">Toca para elegir la foto de referencia</p>
+              <p style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">Se optimizará automáticamente a 2048px</p>
+            </div>
+            <img id="ref-preview-img" class="preview-img" style="display: none;" alt="Vista previa">
+          </div>
+          <input type="file" id="input-reference-file" accept="image/*" class="visually-hidden">
+        </div>
+
+        <div class="modal-actions">
+          <button class="btn-secondary" id="btn-cancel-new-proj">Cancelar</button>
+          <button class="btn-primary" id="btn-submit-new-proj">Crear y Abrir</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast de Notificaciones Rápidas -->
+    <div id="app-toast" class="toast-msg"></div>
+
+  </div>
+
+  <!-- Scripts Modulares -->
+  <script src="js/db.js"></script>
+  <script src="js/canvas.js"></script>
+  <script src="js/app.js"></script>
+
+</body>
+</html>
