@@ -69,9 +69,12 @@ class CanvasEngine {
       panY: 0
     };
 
-    // Estado del Calibrador de 4 Esquinas
+    // Estado del Calibrador de 4 Esquinas y Deformación de Perspectiva
     this.isCalibrating = false;
     this.calibrationCorners = []; // [{x, y}, {x, y}, {x, y}, {x, y}]
+    this.calibratedSketchCanvas = null; // Canvas rectificado en perspectiva 1:1 con refBounds
+    this.savedCalibration = null; // Esquinas originales guardadas [S0, S1, S2, S3]
+    this.activeCornerDragIndex = -1; // Índice de la esquina arrastrada actualmente (0..3)
 
     // Modos de interacción: 'transform_sketch' | 'explore_canvas' | 'calibrate_corners'
     this.interactionMode = 'transform_sketch';
@@ -207,6 +210,8 @@ class CanvasEngine {
       const img = new Image();
       img.onload = () => {
         this.sketchImg = img;
+        this.calibratedSketchCanvas = null;
+        this.savedCalibration = null;
         this.render();
         resolve(img);
       };
@@ -221,7 +226,10 @@ class CanvasEngine {
 
   clearSketch() {
     this.sketchImg = null;
+    this.calibratedSketchCanvas = null;
+    this.savedCalibration = null;
     this.isCalibrating = false;
+    this.activeCornerDragIndex = -1;
     this.render();
   }
 
@@ -249,6 +257,8 @@ class CanvasEngine {
   }
 
   resetSketchTransform() {
+    this.calibratedSketchCanvas = null;
+    this.savedCalibration = null;
     this.sketchTransform = {
       scale: 1,
       offsetX: 0,
@@ -262,14 +272,231 @@ class CanvasEngine {
     this.render();
   }
 
-  /* ========================================================
-   * AUTO-ENCAJE INTELIGENTE POR CUADRÍCULA (AUTO-ALIGN)
-   * ======================================================== */
+  /**
+   * Conversión exacta de coordenadas de pantalla/viewport al espacio de píxeles
+   * de la imagen original del boceto (sketchImg).
+   */
+  screenToSketchCoords(screenX, screenY) {
+    if (!this.sketchImg) return { x: 0, y: 0 };
+
+    const { x: refX, y: refY, width: refW, height: refH } = this.refBounds;
+    const { scale, offsetX, offsetY, rotation, flipH, flipV } = this.sketchTransform;
+    const sketchW = this.sketchImg.naturalWidth || this.sketchImg.width || 1;
+    const sketchH = this.sketchImg.naturalHeight || this.sketchImg.height || 1;
+
+    const sketchAspect = sketchW / sketchH;
+    const refAspect = refW / refH;
+
+    let baseW, baseH;
+    if (sketchAspect > refAspect) {
+      baseW = refW;
+      baseH = refW / sketchAspect;
+    } else {
+      baseH = refH;
+      baseW = refH * sketchAspect;
+    }
+
+    const centerX = refX + refW / 2 + offsetX;
+    const centerY = refY + refH / 2 + offsetY;
+
+    let dx = screenX - centerX;
+    let dy = screenY - centerY;
+
+    if (rotation) {
+      const rad = (-rotation * Math.PI) / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const rx = dx * cos - dy * sin;
+      const ry = dx * sin + dy * cos;
+      dx = rx;
+      dy = ry;
+    }
+
+    const scaleX = (flipH ? -1 : 1) * (scale || 1);
+    const scaleY = (flipV ? -1 : 1) * (scale || 1);
+    const x0 = dx / scaleX;
+    const y0 = dy / scaleY;
+
+    const imgX = (x0 / baseW + 0.5) * sketchW;
+    const imgY = (y0 / baseH + 0.5) * sketchH;
+
+    return {
+      x: Math.max(0, Math.min(sketchW, imgX)),
+      y: Math.max(0, Math.min(sketchH, imgY))
+    };
+  }
 
   /**
-   * Encaja automáticamente el boceto tomando como referencia la cuadrícula
-   * de la foto original y los bordes/líneas del dibujo capturado.
+   * Conversión del espacio de píxeles de la foto original a coordenadas del viewport del canvas.
    */
+  sketchToScreenCoords(imgX, imgY) {
+    if (!this.sketchImg) return { x: 0, y: 0 };
+
+    const { x: refX, y: refY, width: refW, height: refH } = this.refBounds;
+    const { scale, offsetX, offsetY, rotation, flipH, flipV } = this.sketchTransform;
+    const sketchW = this.sketchImg.naturalWidth || this.sketchImg.width || 1;
+    const sketchH = this.sketchImg.naturalHeight || this.sketchImg.height || 1;
+
+    const sketchAspect = sketchW / sketchH;
+    const refAspect = refW / refH;
+
+    let baseW, baseH;
+    if (sketchAspect > refAspect) {
+      baseW = refW;
+      baseH = refW / sketchAspect;
+    } else {
+      baseH = refH;
+      baseW = refH * sketchAspect;
+    }
+
+    const x0 = (imgX / sketchW - 0.5) * baseW;
+    const y0 = (imgY / sketchH - 0.5) * baseH;
+
+    const scaleX = (flipH ? -1 : 1) * (scale || 1);
+    const scaleY = (flipV ? -1 : 1) * (scale || 1);
+    let dx = x0 * scaleX;
+    let dy = y0 * scaleY;
+
+    if (rotation) {
+      const rad = (rotation * Math.PI) / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const rx = dx * cos - dy * sin;
+      const ry = dx * sin + dy * cos;
+      dx = rx;
+      dy = ry;
+    }
+
+    const centerX = refX + refW / 2 + offsetX;
+    const centerY = refY + refH / 2 + offsetY;
+
+    return {
+      x: Math.round(centerX + dx),
+      y: Math.round(centerY + dy)
+    };
+  }
+
+  /**
+   * Resuelve la matriz de Homografía 3x3 para transformar src -> dst
+   */
+  static calculateHomography(src, dst) {
+    const A = [];
+    for (let i = 0; i < 4; i++) {
+      const sx = src[i].x, sy = src[i].y;
+      const dx = dst[i].x, dy = dst[i].y;
+      A.push([sx, sy, 1, 0, 0, 0, -dx * sx, -dx * sy, -dx]);
+      A.push([0, 0, 0, sx, sy, 1, -dy * sx, -dy * sy, -dy]);
+    }
+
+    // Eliminación Gaussiana con pivoteo parcial
+    for (let i = 0; i < 8; i++) {
+      let maxRow = i;
+      for (let k = i + 1; k < 8; k++) {
+        if (Math.abs(A[k][i]) > Math.abs(A[maxRow][i])) maxRow = k;
+      }
+      const tmp = A[i]; A[i] = A[maxRow]; A[maxRow] = tmp;
+      if (Math.abs(A[i][i]) < 1e-10) continue;
+
+      for (let k = i + 1; k < 8; k++) {
+        const factor = A[k][i] / A[i][i];
+        for (let j = i; j < 9; j++) {
+          A[k][j] -= factor * A[i][j];
+        }
+      }
+    }
+
+    const h = new Array(9);
+    h[8] = 1;
+    for (let i = 7; i >= 0; i--) {
+      let sum = A[i][8] * h[8];
+      for (let j = i + 1; j < 8; j++) sum += A[i][j] * h[j];
+      h[i] = Math.abs(A[i][i]) > 1e-10 ? -sum / A[i][i] : 0;
+    }
+    return h;
+  }
+
+  /**
+   * Deforma un cuadrilátero a un rectángulo plano mediante Homografía y muestreo bilineal.
+   * Elimina toda distorsión de perspectiva, inclinación o ángulo de la cámara.
+   */
+  warpQuadToRect(sourceImg, srcCorners, targetW, targetH) {
+    const srcW = sourceImg.naturalWidth || sourceImg.width;
+    const srcH = sourceImg.naturalHeight || sourceImg.height;
+
+    const srcCanvas = document.createElement('canvas');
+    srcCanvas.width = srcW;
+    srcCanvas.height = srcH;
+    const srcCtx = srcCanvas.getContext('2d', { willReadFrequently: true });
+    srcCtx.drawImage(sourceImg, 0, 0);
+    const srcData = srcCtx.getImageData(0, 0, srcW, srcH);
+    const srcPixels = new Uint32Array(srcData.data.buffer);
+
+    const dstCanvas = document.createElement('canvas');
+    dstCanvas.width = targetW;
+    dstCanvas.height = targetH;
+    const dstCtx = dstCanvas.getContext('2d', { willReadFrequently: true });
+    const dstData = dstCtx.createImageData(targetW, targetH);
+    const dstPixels = new Uint32Array(dstData.data.buffer);
+
+    const dstCorners = [
+      { x: 0, y: 0 },
+      { x: targetW, y: 0 },
+      { x: targetW, y: targetH },
+      { x: 0, y: targetH }
+    ];
+
+    const Hinv = CanvasEngine.calculateHomography(dstCorners, srcCorners);
+
+    const h0 = Hinv[0], h1 = Hinv[1], h2 = Hinv[2];
+    const h3 = Hinv[3], h4 = Hinv[4], h5 = Hinv[5];
+    const h6 = Hinv[6], h7 = Hinv[7], h8 = Hinv[8];
+
+    let dstIdx = 0;
+    for (let y = 0; y < targetH; y++) {
+      for (let x = 0; x < targetW; x++) {
+        const w = h6 * x + h7 * y + h8;
+        if (w !== 0) {
+          const invW = 1.0 / w;
+          const sx = (h0 * x + h1 * y + h2) * invW;
+          const sy = (h3 * x + h4 * y + h5) * invW;
+
+          const ix = Math.floor(sx);
+          const iy = Math.floor(sy);
+
+          if (ix >= 0 && ix < srcW - 1 && iy >= 0 && iy < srcH - 1) {
+            const fx = sx - ix;
+            const fy = sy - iy;
+            const p00 = srcPixels[iy * srcW + ix];
+            const p10 = srcPixels[iy * srcW + (ix + 1)];
+            const p01 = srcPixels[(iy + 1) * srcW + ix];
+            const p11 = srcPixels[(iy + 1) * srcW + (ix + 1)];
+
+            const r = ((p00 & 0xff) * (1 - fx) + (p10 & 0xff) * fx) * (1 - fy) +
+                      (((p01 & 0xff) * (1 - fx) + (p11 & 0xff) * fx)) * fy;
+            const g = (((p00 >> 8) & 0xff) * (1 - fx) + ((p10 >> 8) & 0xff) * fx) * (1 - fy) +
+                      ((((p01 >> 8) & 0xff) * (1 - fx) + ((p11 >> 8) & 0xff) * fx)) * fy;
+            const b = (((p00 >> 16) & 0xff) * (1 - fx) + ((p10 >> 16) & 0xff) * fx) * (1 - fy) +
+                      ((((p01 >> 16) & 0xff) * (1 - fx) + ((p11 >> 16) & 0xff) * fx)) * fy;
+            const a = (((p00 >> 24) & 0xff) * (1 - fx) + ((p10 >> 24) & 0xff) * fx) * (1 - fy) +
+                      ((((p01 >> 24) & 0xff) * (1 - fx) + ((p11 >> 24) & 0xff) * fx)) * fy;
+
+            dstPixels[dstIdx] = (Math.round(a) << 24) | (Math.round(b) << 16) | (Math.round(g) << 8) | Math.round(r);
+          } else if (ix >= 0 && ix < srcW && iy >= 0 && iy < srcH) {
+            dstPixels[dstIdx] = srcPixels[iy * srcW + ix];
+          }
+        }
+        dstIdx++;
+      }
+    }
+
+    dstCtx.putImageData(dstData, 0, 0);
+    return dstCanvas;
+  }
+
+  /* ========================================================
+   * AUTO-ENCAJE INTELIGENTE POR CUADRÍCULA O PAPEL
+   * ======================================================== */
+
   autoAlignSketchWithGrid() {
     if (!this.sketchImg || !this.referenceImg) return false;
 
@@ -277,7 +504,7 @@ class CanvasEngine {
       const sketchNatW = this.sketchImg.naturalWidth || this.sketchImg.width || 1;
       const sketchNatH = this.sketchImg.naturalHeight || this.sketchImg.height || 1;
 
-      // 1. Crear canvas auxiliar de análisis rápido
+      // 1. Análisis rápido de luminancia para detectar la hoja de papel blanca
       const sampleW = 380;
       const sampleH = Math.round((sampleW * sketchNatH) / sketchNatW);
 
@@ -290,182 +517,147 @@ class CanvasEngine {
       const imgData = offCtx.getImageData(0, 0, sampleW, sampleH);
       const data = imgData.data;
 
-      // 2. Grayscale & Gradiente de bordes (filtro Sobel ligero)
       const gray = new Float32Array(sampleW * sampleH);
+      let minLum = 255, maxLum = 0;
       for (let i = 0; i < data.length; i += 4) {
-        gray[i / 4] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+        const val = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+        gray[i / 4] = val;
+        if (val < minLum) minLum = val;
+        if (val > maxLum) maxLum = val;
       }
 
-      const colEdges = new Float32Array(sampleW);
-      const rowEdges = new Float32Array(sampleH);
+      // El papel es significativamente más claro que el tablero de soporte
+      const paperThreshold = minLum + (maxLum - minLum) * 0.58;
+      const colBright = new Float32Array(sampleW);
+      const rowBright = new Float32Array(sampleH);
 
-      for (let y = 1; y < sampleH - 1; y++) {
-        for (let x = 1; x < sampleW - 1; x++) {
-          const idx = y * sampleW + x;
-          const gx = Math.abs(gray[idx + 1] - gray[idx - 1]);
-          const gy = Math.abs(gray[idx + sampleW] - gray[idx - sampleW]);
-          colEdges[x] += gx;
-          rowEdges[y] += gy;
+      for (let y = 0; y < sampleH; y++) {
+        for (let x = 0; x < sampleW; x++) {
+          if (gray[y * sampleW + x] >= paperThreshold) {
+            colBright[x]++;
+            rowBright[y]++;
+          }
         }
       }
 
-      // 3. Detección de límites de la cuadrícula o papel dibujado
-      let maxCol = 0;
-      for (let x = 0; x < sampleW; x++) if (colEdges[x] > maxCol) maxCol = colEdges[x];
-      const thresholdCol = maxCol * 0.32;
+      let minX = 0, maxX = sampleW - 1, minY = 0, maxY = sampleH - 1;
+      const minColCount = sampleH * 0.22;
+      const minRowCount = sampleW * 0.22;
 
-      let minX = Math.round(sampleW * 0.08);
-      let maxX = Math.round(sampleW * 0.92);
-
-      for (let x = 6; x < sampleW * 0.45; x++) {
-        if (colEdges[x] > thresholdCol) {
-          minX = x;
-          break;
-        }
+      for (let x = 0; x < sampleW; x++) {
+        if (colBright[x] >= minColCount) { minX = x; break; }
       }
-      for (let x = sampleW - 7; x > sampleW * 0.55; x--) {
-        if (colEdges[x] > thresholdCol) {
-          maxX = x;
-          break;
-        }
+      for (let x = sampleW - 1; x >= 0; x--) {
+        if (colBright[x] >= minColCount) { maxX = x; break; }
+      }
+      for (let y = 0; y < sampleH; y++) {
+        if (rowBright[y] >= minRowCount) { minY = y; break; }
+      }
+      for (let y = sampleH - 1; y >= 0; y--) {
+        if (rowBright[y] >= minRowCount) { maxY = y; break; }
       }
 
-      let maxRow = 0;
-      for (let y = 0; y < sampleH; y++) if (rowEdges[y] > maxRow) maxRow = rowEdges[y];
-      const thresholdRow = maxRow * 0.32;
+      // Si detectamos los límites del papel de dibujo (mínimo 30% del encuadre)
+      if ((maxX - minX) > sampleW * 0.30 && (maxY - minY) > sampleH * 0.30) {
+        const S0 = { x: (minX / sampleW) * sketchNatW, y: (minY / sampleH) * sketchNatH };
+        const S1 = { x: (maxX / sampleW) * sketchNatW, y: (minY / sampleH) * sketchNatH };
+        const S2 = { x: (maxX / sampleW) * sketchNatW, y: (maxY / sampleH) * sketchNatH };
+        const S3 = { x: (minX / sampleW) * sketchNatW, y: (maxY / sampleH) * sketchNatH };
 
-      let minY = Math.round(sampleH * 0.08);
-      let maxY = Math.round(sampleH * 0.92);
+        const { width: refW, height: refH } = this.refBounds;
+        const dpr = window.devicePixelRatio || 2;
+        const targetW = Math.max(1200, Math.min(2048, Math.round(refW * dpr)));
+        const targetH = Math.round(targetW * (refH / refW));
 
-      for (let y = 6; y < sampleH * 0.45; y++) {
-        if (rowEdges[y] > thresholdRow) {
-          minY = y;
-          break;
-        }
-      }
-      for (let y = sampleH - 7; y > sampleH * 0.55; y--) {
-        if (rowEdges[y] > thresholdRow) {
-          maxY = y;
-          break;
-        }
-      }
+        const warped = this.warpQuadToRect(this.sketchImg, [S0, S1, S2, S3], targetW, targetH);
+        this.calibratedSketchCanvas = warped;
+        this.savedCalibration = [S0, S1, S2, S3];
 
-      // Validar dimensiones detectadas
-      if ((maxX - minX) < sampleW * 0.25 || (maxY - minY) < sampleH * 0.25) {
-        minX = Math.round(sampleW * 0.08);
-        maxX = Math.round(sampleW * 0.92);
-        minY = Math.round(sampleH * 0.08);
-        maxY = Math.round(sampleH * 0.92);
-      }
+        this.sketchTransform.scale = 1.0;
+        this.sketchTransform.offsetX = 0;
+        this.sketchTransform.offsetY = 0;
+        this.sketchTransform.rotation = 0;
+        this.sketchTransform.flipH = false;
+        this.sketchTransform.flipV = false;
 
-      // 4. Calcular transformación matemática para encajar en refBounds
-      const { width: refW, height: refH } = this.refBounds;
-      const sketchAspect = sketchNatW / sketchNatH;
-      const refAspect = refW / refH;
-
-      let baseW, baseH;
-      if (sketchAspect > refAspect) {
-        baseW = refW;
-        baseH = refW / sketchAspect;
-      } else {
-        baseH = refH;
-        baseW = refH * sketchAspect;
+        this.render();
+        return true;
       }
 
-      const detectedGridW = ((maxX - minX) / sampleW) * baseW;
-      const detectedGridH = ((maxY - minY) / sampleH) * baseH;
-
-      const scaleX = refW / detectedGridW;
-      const scaleY = refH / detectedGridH;
-      const newScale = +(Math.max(0.3, Math.min(4.5, (scaleX + scaleY) / 2))).toFixed(3);
-
-      const normCenterX = (((minX + maxX) / 2) / sampleW - 0.5) * baseW;
-      const normCenterY = (((minY + maxY) / 2) / sampleH - 0.5) * baseH;
-
-      const newOffsetX = Math.round(-normCenterX * newScale);
-      const newOffsetY = Math.round(-normCenterY * newScale);
-
-      this.setSketchTransform({
-        scale: newScale,
-        offsetX: newOffsetX,
-        offsetY: newOffsetY,
-        rotation: 0
-      });
-
-      return true;
+      return false;
     } catch (err) {
-      console.warn('Auto-encaje por cuadrícula falló:', err);
+      console.warn('Auto-encaje por papel/cuadrícula falló:', err);
       return false;
     }
   }
 
   /* ========================================================
-   * CALIBRADOR INTERACTIVO DE 4 ESQUINAS
+   * CALIBRADOR INTERACTIVO DE 4 ESQUINAS (RECTIFICACIÓN PERSPECTIVA)
    * ======================================================== */
 
   startCalibration() {
     if (!this.sketchImg) return;
     this.isCalibrating = true;
+    this.activeCornerDragIndex = -1;
+    this.resetViewTransform();
 
-    // Inicializar las 4 esquinas según el estado actual de refBounds
-    const { x, y, width: w, height: h } = this.refBounds;
-    this.calibrationCorners = [
-      { x: x + w * 0.05, y: y + h * 0.05 }, // 0: Top-Left
-      { x: x + w * 0.95, y: y + h * 0.05 }, // 1: Top-Right
-      { x: x + w * 0.95, y: y + h * 0.95 }, // 2: Bottom-Right
-      { x: x + w * 0.05, y: y + h * 0.95 }  // 3: Bottom-Left
-    ];
+    const sketchW = this.sketchImg.naturalWidth || this.sketchImg.width || 1;
+    const sketchH = this.sketchImg.naturalHeight || this.sketchImg.height || 1;
+
+    // Si ya teníamos esquinas guardadas previamente, colocarlas donde estaban
+    if (this.savedCalibration && this.savedCalibration.length === 4) {
+      this.calibrationCorners = this.savedCalibration.map(pt => this.sketchToScreenCoords(pt.x, pt.y));
+    } else {
+      // Iniciar las 4 esquinas sobre la foto del boceto con un margen accesible del 12%
+      this.calibrationCorners = [
+        this.sketchToScreenCoords(sketchW * 0.12, sketchH * 0.12), // 0: Top-Left
+        this.sketchToScreenCoords(sketchW * 0.88, sketchH * 0.12), // 1: Top-Right
+        this.sketchToScreenCoords(sketchW * 0.88, sketchH * 0.88), // 2: Bottom-Right
+        this.sketchToScreenCoords(sketchW * 0.12, sketchH * 0.88)  // 3: Bottom-Left
+      ];
+    }
 
     this.render();
   }
 
   applyCalibrationCorners() {
-    if (!this.isCalibrating || this.calibrationCorners.length !== 4) {
+    if (!this.isCalibrating || this.calibrationCorners.length !== 4 || !this.sketchImg) {
       this.isCalibrating = false;
       this.render();
       return;
     }
 
     const [p0, p1, p2, p3] = this.calibrationCorners;
-    const { x: refX, y: refY, width: refW, height: refH } = this.refBounds;
+    const { width: refW, height: refH } = this.refBounds;
 
-    // Centro del cuadrilátero marcado por el usuario
-    const quadCenterX = (p0.x + p1.x + p2.x + p3.x) / 4;
-    const quadCenterY = (p0.y + p1.y + p2.y + p3.y) / 4;
+    // 1. Obtener las 4 esquinas exactas en el espacio de píxeles de la foto original
+    const S0 = this.screenToSketchCoords(p0.x, p0.y);
+    const S1 = this.screenToSketchCoords(p1.x, p1.y);
+    const S2 = this.screenToSketchCoords(p2.x, p2.y);
+    const S3 = this.screenToSketchCoords(p3.x, p3.y);
 
-    // Ancho y alto medios del cuadrilátero marcado
-    const topW = Math.hypot(p1.x - p0.x, p1.y - p0.y);
-    const bottomW = Math.hypot(p2.x - p3.x, p2.y - p3.y);
-    const avgW = (topW + bottomW) / 2 || 1;
+    // 2. Dimensiones de destino de alta resolución para iPad Retina
+    const dpr = window.devicePixelRatio || 2;
+    const targetW = Math.max(1200, Math.min(2048, Math.round(refW * dpr)));
+    const targetH = Math.round(targetW * (refH / refW));
 
-    const leftH = Math.hypot(p3.x - p0.x, p3.y - p0.y);
-    const rightH = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-    const avgH = (leftH + rightH) / 2 || 1;
+    // 3. Rectificar perspectiva mediante homografía bilineal
+    const warpedCanvas = this.warpQuadToRect(this.sketchImg, [S0, S1, S2, S3], targetW, targetH);
+    this.calibratedSketchCanvas = warpedCanvas;
 
-    // Ángulo de inclinación en grados
-    const angleRad = Math.atan2(p1.y - p0.y, p1.x - p0.x);
-    const angleDeg = Math.round((angleRad * 180) / Math.PI);
+    // 4. Guardar esquinas originales de calibración para persistencia
+    this.savedCalibration = [S0, S1, S2, S3];
 
-    // Factor de escala necesario
-    const scaleFactor = ((refW / avgW) + (refH / avgH)) / 2;
-    const newScale = +(Math.max(0.2, Math.min(5.0, this.sketchTransform.scale * scaleFactor))).toFixed(3);
-
-    // Centro de referencia
-    const refCenterX = refX + refW / 2;
-    const refCenterY = refY + refH / 2;
-
-    const newOffsetX = Math.round(this.sketchTransform.offsetX + (refCenterX - quadCenterX));
-    const newOffsetY = Math.round(this.sketchTransform.offsetY + (refCenterY - quadCenterY));
-    const newRotation = Math.round((this.sketchTransform.rotation - angleDeg) % 360);
-
-    this.setSketchTransform({
-      scale: newScale,
-      offsetX: newOffsetX,
-      offsetY: newOffsetY,
-      rotation: newRotation
-    });
+    // 5. Restablecer transformaciones (el warpedCanvas ahora encaja 1:1 exactamente en refBounds)
+    this.sketchTransform.scale = 1.0;
+    this.sketchTransform.offsetX = 0;
+    this.sketchTransform.offsetY = 0;
+    this.sketchTransform.rotation = 0;
+    this.sketchTransform.flipH = false;
+    this.sketchTransform.flipV = false;
 
     this.isCalibrating = false;
+    this.activeCornerDragIndex = -1;
     this.render();
   }
 
@@ -661,35 +853,23 @@ class CanvasEngine {
     ctx.restore();
   }
 
-  drawSketchLayer(ctx) {
+  drawSketchLayer(ctx, forceOpaque = false) {
     if (!this.sketchImg) return;
 
     const { x: refX, y: refY, width: refW, height: refH } = this.refBounds;
     const { scale, offsetX, offsetY, rotation, flipH, flipV, opacity, blendMode } = this.sketchTransform;
 
-    const sketchW = this.sketchImg.naturalWidth || this.sketchImg.width || 1;
-    const sketchH = this.sketchImg.naturalHeight || this.sketchImg.height || 1;
-
-    // Calcular tamaño base del boceto para coincidir proporcionalmente
-    const sketchAspect = sketchW / sketchH;
-    const refAspect = refW / refH;
-
-    let baseW, baseH;
-    if (sketchAspect > refAspect) {
-      baseW = refW;
-      baseH = refW / sketchAspect;
-    } else {
-      baseH = refH;
-      baseW = refH * sketchAspect;
-    }
-
     ctx.save();
 
-    // Modo de fusión: si la referencia está activa y cargada debajo, usar blendMode (difference/multiply).
-    // Si la referencia está oculta o no existe, usar 'source-over' para que el boceto sea 100% visible sobre el fondo.
-    const hasReferenceBelow = !!(this.layers.reference && this.referenceImg);
-    ctx.globalCompositeOperation = hasReferenceBelow ? (blendMode || 'difference') : 'source-over';
-    ctx.globalAlpha = Math.max(0.05, Math.min(1, opacity));
+    // Si está en modo calibración o forceOpaque, dibujar 100% visible para que el artista vea sus trazos con nitidez
+    if (this.isCalibrating || forceOpaque) {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = 0.96;
+    } else {
+      const hasReferenceBelow = !!(this.layers.reference && this.referenceImg);
+      ctx.globalCompositeOperation = hasReferenceBelow ? (blendMode || 'difference') : 'source-over';
+      ctx.globalAlpha = Math.max(0.05, Math.min(1, opacity));
+    }
 
     // Centro de rotación y escalado
     const centerX = refX + refW / 2 + offsetX;
@@ -697,18 +877,35 @@ class CanvasEngine {
 
     ctx.translate(centerX, centerY);
 
-    // Rotación (en radianes)
     if (rotation) {
       ctx.rotate((rotation * Math.PI) / 180);
     }
 
-    // Escala y volteo horizontal/vertical
     const scaleX = (flipH ? -1 : 1) * scale;
     const scaleY = (flipV ? -1 : 1) * scale;
     ctx.scale(scaleX, scaleY);
 
-    // Dibujar boceto centrado
-    ctx.drawImage(this.sketchImg, -baseW / 2, -baseH / 2, baseW, baseH);
+    if (this.calibratedSketchCanvas && !this.isCalibrating && !forceOpaque) {
+      // Dibujar la imagen calibrada rectificada que encaja 1:1 con refBounds
+      ctx.drawImage(this.calibratedSketchCanvas, -refW / 2, -refH / 2, refW, refH);
+    } else {
+      // Dibujar la foto original escalada
+      const sketchW = this.sketchImg.naturalWidth || this.sketchImg.width || 1;
+      const sketchH = this.sketchImg.naturalHeight || this.sketchImg.height || 1;
+      const sketchAspect = sketchW / sketchH;
+      const refAspect = refW / refH;
+
+      let baseW, baseH;
+      if (sketchAspect > refAspect) {
+        baseW = refW;
+        baseH = refW / sketchAspect;
+      } else {
+        baseH = refH;
+        baseW = refH * sketchAspect;
+      }
+
+      ctx.drawImage(this.sketchImg, -baseW / 2, -baseH / 2, baseW, baseH);
+    }
 
     ctx.restore();
   }
@@ -740,34 +937,95 @@ class CanvasEngine {
     corners.forEach((pt, idx) => {
       ctx.setLineDash([]);
 
+      const isDragging = (this.activeCornerDragIndex === idx);
+
       // Halo exterior
       ctx.beginPath();
-      ctx.arc(pt.x, pt.y, 22, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(0, 229, 255, 0.4)';
+      ctx.arc(pt.x, pt.y, isDragging ? 32 : 24, 0, Math.PI * 2);
+      ctx.fillStyle = isDragging ? 'rgba(0, 229, 255, 0.5)' : 'rgba(0, 229, 255, 0.3)';
       ctx.fill();
 
       // Círculo botón táctil
       ctx.beginPath();
-      ctx.arc(pt.x, pt.y, 14, 0, Math.PI * 2);
-      ctx.fillStyle = '#00e5ff';
+      ctx.arc(pt.x, pt.y, isDragging ? 18 : 14, 0, Math.PI * 2);
+      ctx.fillStyle = isDragging ? '#ffffff' : '#00e5ff';
       ctx.fill();
-      ctx.strokeStyle = '#ffffff';
+      ctx.strokeStyle = isDragging ? '#00e5ff' : '#ffffff';
       ctx.lineWidth = 2.5;
       ctx.stroke();
 
-      // Punto blanco central
+      // Punto central
       ctx.beginPath();
       ctx.arc(pt.x, pt.y, 4, 0, Math.PI * 2);
-      ctx.fillStyle = '#ffffff';
+      ctx.fillStyle = isDragging ? '#00e5ff' : '#ffffff';
       ctx.fill();
 
       // Texto de la esquina
       ctx.font = 'bold 12px -apple-system, sans-serif';
       ctx.fillStyle = '#ffffff';
       ctx.textAlign = 'center';
-      const textY = idx < 2 ? pt.y - 28 : pt.y + 36;
+      const textY = idx < 2 ? pt.y - 30 : pt.y + 36;
       ctx.fillText(labels[idx], pt.x, textY);
     });
+
+    // Lupa de aumento interactiva para iPad (cuando el usuario está arrastrando una esquina)
+    if (this.activeCornerDragIndex !== undefined && this.activeCornerDragIndex >= 0) {
+      const activePt = corners[this.activeCornerDragIndex];
+      const loupeRadius = 56;
+      const loupeYOffset = (activePt.y - 130 > 40) ? -95 : 95;
+      const loupeX = activePt.x;
+      const loupeY = activePt.y + loupeYOffset;
+
+      ctx.save();
+      // Sombra exterior de la lupa
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.7)';
+      ctx.shadowBlur = 18;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 6;
+
+      // Círculo de recorte
+      ctx.beginPath();
+      ctx.arc(loupeX, loupeY, loupeRadius, 0, Math.PI * 2);
+      ctx.clip();
+
+      // Fondo oscuro
+      ctx.fillStyle = '#1a1a1e';
+      ctx.fillRect(loupeX - loupeRadius, loupeY - loupeRadius, loupeRadius * 2, loupeRadius * 2);
+
+      // Dibujar sketch ampliado 2.4x
+      ctx.save();
+      ctx.translate(loupeX, loupeY);
+      ctx.scale(2.4, 2.4);
+      ctx.translate(-activePt.x, -activePt.y);
+
+      this.drawSketchLayer(ctx, true);
+      ctx.restore();
+
+      // Retícula / Crosshair en el centro de la lupa
+      ctx.strokeStyle = '#00e5ff';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(loupeX - 20, loupeY);
+      ctx.lineTo(loupeX + 20, loupeY);
+      ctx.moveTo(loupeX, loupeY - 20);
+      ctx.lineTo(loupeX, loupeY + 20);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(loupeX, loupeY, 4, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.restore(); // Termina clip
+
+      // Borde exterior blanco de la lupa
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(loupeX, loupeY, loupeRadius, 0, Math.PI * 2);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      ctx.restore();
+    }
 
     ctx.restore();
   }

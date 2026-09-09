@@ -313,7 +313,7 @@ class BocetosApp {
         const touchY = e.clientY - rect.top;
 
         let closestIdx = -1;
-        let minDist = 48; // Área táctil generosa para dedos / Apple Pencil
+        let minDist = 56; // Área táctil generosa para dedos / Apple Pencil (56px)
         this.canvasEngine.calibrationCorners.forEach((pt, idx) => {
           const d = Math.hypot(pt.x - touchX, pt.y - touchY);
           if (d < minDist) {
@@ -327,6 +327,8 @@ class BocetosApp {
             pointerId: e.pointerId,
             index: closestIdx
           };
+          this.canvasEngine.activeCornerDragIndex = closestIdx;
+          this.canvasEngine.render();
           return;
         }
       }
@@ -373,6 +375,7 @@ class BocetosApp {
           x: Math.round(e.clientX - rect.left),
           y: Math.round(e.clientY - rect.top)
         };
+        this.canvasEngine.activeCornerDragIndex = curIdx;
         this.canvasEngine.render();
         return;
       }
@@ -429,6 +432,8 @@ class BocetosApp {
     const pointerEndHandler = (e) => {
       if (this.activeCornerDrag && this.activeCornerDrag.pointerId === e.pointerId) {
         this.activeCornerDrag = null;
+        this.canvasEngine.activeCornerDragIndex = -1;
+        this.canvasEngine.render();
       }
 
       this.activePointers.delete(e.pointerId);
