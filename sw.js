@@ -3,16 +3,16 @@
  * Estrategia Network First: actualización instantánea de cambios con respaldo offline
  */
 
-const CACHE_NAME = 'bocetos-cache-v2';
+const CACHE_NAME = 'bocetos-cache-v3';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
-  './styles.css?v=2',
+  './styles.css?v=3',
   './manifest.json',
   './icons/icon.svg',
-  './js/db.js?v=2',
-  './js/canvas.js?v=2',
-  './js/app.js?v=2'
+  './js/db.js?v=3',
+  './js/canvas.js?v=3',
+  './js/app.js?v=3'
 ];
 
 self.addEventListener('install', (event) => {

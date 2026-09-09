@@ -99,7 +99,8 @@ class BocetosDB {
             if (blob) {
               resolve(blob);
             } else {
-              reject(new Error('No se pudo generar el Blob optimizado'));
+              console.warn('toBlob devolvió null, usando archivo original como fallback');
+              resolve(fileOrBlob);
             }
           },
           'image/jpeg',
@@ -109,7 +110,8 @@ class BocetosDB {
 
       img.onerror = (err) => {
         URL.revokeObjectURL(url);
-        reject(err);
+        console.warn('Error cargando imagen en optimizeImageBlob, usando archivo original:', err);
+        resolve(fileOrBlob);
       };
 
       img.src = url;

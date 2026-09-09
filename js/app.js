@@ -36,8 +36,8 @@ class BocetosApp {
       });
     }
 
-    // Cargar galería inicial
-    await this.loadGallery();
+    // Asegurar que la app inicie siempre en la vista de Galería
+    this.showGalleryView();
   }
 
   /* ========================================================
@@ -95,7 +95,12 @@ class BocetosApp {
 
     // Cargar Imagen de Referencia (Capa 1)
     if (project.referenceImageBlob) {
-      await this.canvasEngine.loadReferenceBlob(project.referenceImageBlob);
+      try {
+        await this.canvasEngine.loadReferenceBlob(project.referenceImageBlob);
+      } catch (err) {
+        console.error('Error cargando referencia:', err);
+        this.showToast('Aviso: problema al leer imagen de referencia guardada');
+      }
     }
 
     // Asegurar medición con la imagen ya cargada
@@ -456,12 +461,51 @@ class BocetosApp {
 
     // 2. Modo Lienzo Limpio (Zen Mode)
     const cleanToggleBtn = document.getElementById('btn-toggle-clean-mode');
-    cleanToggleBtn.addEventListener('click', () => {
-      const studio = document.getElementById('studio-view');
-      studio.classList.toggle('clean-mode');
-      const isClean = studio.classList.contains('clean-mode');
-      cleanToggleBtn.setAttribute('aria-label', isClean ? 'Salir de modo limpio' : 'Modo limpio');
-    });
+    if (cleanToggleBtn) {
+      cleanToggleBtn.addEventListener('click', () => {
+        const studio = document.getElementById('studio-view');
+        studio.classList.toggle('clean-mode');
+        const isClean = studio.classList.contains('clean-mode');
+        cleanToggleBtn.setAttribute('aria-label', isClean ? 'Salir de modo limpio' : 'Modo limpio');
+      });
+    }
+
+    const exitCleanBtn = document.getElementById('btn-exit-clean-mode');
+    if (exitCleanBtn) {
+      exitCleanBtn.addEventListener('click', () => {
+        const studio = document.getElementById('studio-view');
+        studio.classList.remove('clean-mode');
+      });
+    }
+
+    // 2b. Cambiar o Cargar Foto de Referencia desde el Estudio
+    const btnChangeRef = document.getElementById('btn-change-ref');
+    const inputChangeRefFile = document.getElementById('input-change-ref-file');
+    if (btnChangeRef && inputChangeRefFile) {
+      btnChangeRef.addEventListener('click', () => {
+        inputChangeRefFile.click();
+      });
+
+      inputChangeRefFile.addEventListener('change', async (e) => {
+        if (e.target.files && e.target.files[0] && this.currentProject) {
+          const file = e.target.files[0];
+          this.showToast('Optimizando y actualizando foto...');
+          try {
+            const optBlob = await window.bocetosDB.optimizeImageBlob(file, 2048, 0.90);
+            const thumbBlob = await window.bocetosDB.createThumbnail(optBlob, 360);
+            this.currentProject.referenceImageBlob = optBlob;
+            this.currentProject.referenceThumbnailBlob = thumbBlob;
+            await window.bocetosDB.saveProject(this.currentProject);
+            await this.canvasEngine.loadReferenceBlob(optBlob);
+            this.showToast('✓ ¡Foto de referencia actualizada!');
+          } catch (err) {
+            console.error('Error actualizando foto de referencia:', err);
+            this.showToast('Error al actualizar la foto');
+          }
+          inputChangeRefFile.value = '';
+        }
+      });
+    }
 
     // 3. Toggles de Visibilidad de Capas
     document.getElementById('chip-toggle-ref').addEventListener('click', () => {
@@ -833,6 +877,7 @@ class BocetosApp {
 
     this.openNewProjectModal = () => {
       document.getElementById('input-project-name').value = '';
+      inputRefFile.value = '';
       selectedRefBlob = null;
       previewImg.style.display = 'none';
       placeholderText.style.display = 'block';
@@ -842,6 +887,8 @@ class BocetosApp {
 
     document.getElementById('btn-cancel-new-proj').addEventListener('click', () => {
       newProjModal.classList.remove('open');
+      inputRefFile.value = '';
+      selectedRefBlob = null;
     });
 
     dropzone.addEventListener('click', () => {
@@ -854,7 +901,6 @@ class BocetosApp {
         previewImg.src = URL.createObjectURL(selectedRefBlob);
         previewImg.style.display = 'block';
         placeholderText.style.display = 'none';
-        inputRefFile.value = '';
       }
     });
 
@@ -877,6 +923,8 @@ class BocetosApp {
         });
 
         newProjModal.classList.remove('open');
+        inputRefFile.value = '';
+        selectedRefBlob = null;
         this.showToast(`Proyecto "${name}" creado`);
         await this.showStudioView(project);
       } catch (err) {
