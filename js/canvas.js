@@ -29,6 +29,7 @@ class CanvasEngine {
     this.gridConfig = {
       rows: 4,
       cols: 4,
+      squareCells: false,
       color: '#00e5ff',
       lineWidth: 2,
       showDiagonals: false,
@@ -552,20 +553,36 @@ class CanvasEngine {
 
   drawGridLayer(ctx) {
     const { x, y, width, height } = this.refBounds;
-    const { rows, cols, color, lineWidth, showDiagonals, showLabels } = this.gridConfig;
+    const { rows, cols, color, lineWidth, showDiagonals, showLabels, squareCells } = this.gridConfig;
 
-    if (rows <= 0 || cols <= 0 || width <= 0 || height <= 0) return;
+    if (cols <= 0 || width <= 0 || height <= 0) return;
 
-    const cellW = width / cols;
-    const cellH = height / rows;
+    let cellW, cellH, effectiveRows;
+
+    if (squareCells) {
+      cellW = width / cols;
+      cellH = cellW; // Cuadrados perfectos 1:1
+      effectiveRows = Math.ceil(height / cellH);
+    } else {
+      if (rows <= 0) return;
+      cellW = width / cols;
+      cellH = height / rows;
+      effectiveRows = rows;
+    }
 
     ctx.save();
     ctx.strokeStyle = color;
     ctx.lineWidth = lineWidth;
     ctx.lineCap = 'square';
 
-    // Borde exterior
+    // Borde exterior del encuadre
     ctx.strokeRect(x, y, width, height);
+
+    // Recortar al área exacta de la referencia
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, y, width, height);
+    ctx.clip();
 
     // Líneas verticales internas
     for (let c = 1; c < cols; c++) {
@@ -577,12 +594,14 @@ class CanvasEngine {
     }
 
     // Líneas horizontales internas
-    for (let r = 1; r < rows; r++) {
+    for (let r = 1; r < effectiveRows; r++) {
       const lineY = y + r * cellH;
-      ctx.beginPath();
-      ctx.moveTo(x, lineY);
-      ctx.lineTo(x + width, lineY);
-      ctx.stroke();
+      if (lineY < y + height) {
+        ctx.beginPath();
+        ctx.moveTo(x, lineY);
+        ctx.lineTo(x + width, lineY);
+        ctx.stroke();
+      }
     }
 
     // Diagonales de encaje (opcional para artistas)
@@ -592,21 +611,24 @@ class CanvasEngine {
       ctx.lineWidth = Math.max(1, lineWidth * 0.75);
       ctx.globalAlpha = 0.65;
 
-      for (let r = 0; r < rows; r++) {
+      for (let r = 0; r < effectiveRows; r++) {
         for (let c = 0; c < cols; c++) {
           const cx = x + c * cellW;
           const cy = y + r * cellH;
+          const curCellH = Math.min(cellH, (y + height) - cy);
 
           ctx.beginPath();
           ctx.moveTo(cx, cy);
-          ctx.lineTo(cx + cellW, cy + cellH);
+          ctx.lineTo(cx + cellW, cy + curCellH);
           ctx.moveTo(cx + cellW, cy);
-          ctx.lineTo(cx, cy + cellH);
+          ctx.lineTo(cx, cy + curCellH);
           ctx.stroke();
         }
       }
       ctx.restore();
     }
+
+    ctx.restore(); // Termina clip
 
     // Etiquetas en los bordes (Letras columnas A, B, C... y Números filas 1, 2, 3...)
     if (showLabels) {
@@ -625,10 +647,13 @@ class CanvasEngine {
 
       // Filas (1, 2, 3...)
       ctx.textAlign = 'right';
-      for (let r = 0; r < rows; r++) {
+      for (let r = 0; r < effectiveRows; r++) {
         const label = (r + 1).toString();
-        const posY = y + r * cellH + cellH / 2;
-        ctx.fillText(label, x - 10, posY);
+        const curCellH = Math.min(cellH, (y + height) - (y + r * cellH));
+        if (curCellH >= 12) {
+          const posY = y + r * cellH + curCellH / 2;
+          ctx.fillText(label, x - 10, posY);
+        }
       }
       ctx.restore();
     }

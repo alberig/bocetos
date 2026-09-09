@@ -189,6 +189,7 @@ class BocetosDB {
       gridConfig: {
         rows: 4,
         cols: 4,
+        squareCells: false,
         color: '#00e5ff',
         lineWidth: 2,
         showDiagonals: false,

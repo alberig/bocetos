@@ -15,7 +15,7 @@
   <link rel="manifest" href="manifest.json">
 
   <!-- Estilos -->
-  <link rel="stylesheet" href="styles.css?v=3">
+  <link rel="stylesheet" href="styles.css?v=4">
 </head>
 <body>
 
@@ -154,20 +154,28 @@
         </div>
 
         <div class="control-row">
-          <span class="control-label">Filas:</span>
-          <div class="stepper-container">
-            <button class="stepper-btn" id="btn-rows-minus">−</button>
-            <span class="stepper-value" id="rows-value-display">4</span>
-            <button class="stepper-btn" id="btn-rows-plus">+</button>
-          </div>
+          <span class="control-label">Cuadrados (1:1):</span>
+          <label class="switch" title="Cuadrícula con celdas cuadradas exactas">
+            <input type="checkbox" id="toggle-grid-square">
+            <span class="slider-toggle"></span>
+          </label>
         </div>
 
-        <div class="control-row">
+        <div class="control-row" id="row-control-cols">
           <span class="control-label">Columnas:</span>
           <div class="stepper-container">
             <button class="stepper-btn" id="btn-cols-minus">−</button>
             <span class="stepper-value" id="cols-value-display">4</span>
             <button class="stepper-btn" id="btn-cols-plus">+</button>
+          </div>
+        </div>
+
+        <div class="control-row" id="row-control-rows">
+          <span class="control-label">Filas:</span>
+          <div class="stepper-container">
+            <button class="stepper-btn" id="btn-rows-minus">−</button>
+            <span class="stepper-value" id="rows-value-display">4</span>
+            <button class="stepper-btn" id="btn-rows-plus">+</button>
           </div>
         </div>
 
@@ -390,9 +398,9 @@
   </div>
 
   <!-- Scripts Modulares -->
-  <script src="js/db.js?v=3"></script>
-  <script src="js/canvas.js?v=3"></script>
-  <script src="js/app.js?v=3"></script>
+  <script src="js/db.js?v=4"></script>
+  <script src="js/canvas.js?v=4"></script>
+  <script src="js/app.js?v=4"></script>
 
 </body>
 </html>

@@ -70,6 +70,7 @@ class BocetosApp {
     const gridCfg = project.gridConfig || {
       rows: 4,
       cols: 4,
+      squareCells: false,
       color: '#00e5ff',
       lineWidth: 2,
       showDiagonals: false,
@@ -103,8 +104,9 @@ class BocetosApp {
       }
     }
 
-    // Asegurar medición con la imagen ya cargada
+    // Asegurar medición con la imagen ya cargada y sincronizar cuadrícula
     this.canvasEngine.resize();
+    this.syncGridUI(this.canvasEngine.gridConfig);
 
     // Cargar Iteraciones del Proyecto (Timeline)
     await this.loadProjectIterations(project.id);
@@ -497,6 +499,7 @@ class BocetosApp {
             this.currentProject.referenceThumbnailBlob = thumbBlob;
             await window.bocetosDB.saveProject(this.currentProject);
             await this.canvasEngine.loadReferenceBlob(optBlob);
+            this.syncGridUI(this.canvasEngine.gridConfig);
             this.showToast('✓ ¡Foto de referencia actualizada!');
           } catch (err) {
             console.error('Error actualizando foto de referencia:', err);
@@ -622,15 +625,13 @@ class BocetosApp {
   }
 
   bindGridControls() {
-    // Steppers Filas
-    document.getElementById('btn-rows-minus').addEventListener('click', () => {
-      const cur = this.canvasEngine.gridConfig.rows;
-      if (cur > 1) this.updateGrid({ rows: cur - 1 });
-    });
-    document.getElementById('btn-rows-plus').addEventListener('click', () => {
-      const cur = this.canvasEngine.gridConfig.rows;
-      if (cur < 20) this.updateGrid({ rows: cur + 1 });
-    });
+    // Toggle Cuadrados Perfectos (1:1)
+    const toggleSquare = document.getElementById('toggle-grid-square');
+    if (toggleSquare) {
+      toggleSquare.addEventListener('change', (e) => {
+        this.updateGrid({ squareCells: e.target.checked });
+      });
+    }
 
     // Steppers Columnas
     document.getElementById('btn-cols-minus').addEventListener('click', () => {
@@ -639,7 +640,17 @@ class BocetosApp {
     });
     document.getElementById('btn-cols-plus').addEventListener('click', () => {
       const cur = this.canvasEngine.gridConfig.cols;
-      if (cur < 20) this.updateGrid({ cols: cur + 1 });
+      if (cur < 25) this.updateGrid({ cols: cur + 1 });
+    });
+
+    // Steppers Filas
+    document.getElementById('btn-rows-minus').addEventListener('click', () => {
+      const cur = this.canvasEngine.gridConfig.rows;
+      if (cur > 1) this.updateGrid({ rows: cur - 1 });
+    });
+    document.getElementById('btn-rows-plus').addEventListener('click', () => {
+      const cur = this.canvasEngine.gridConfig.rows;
+      if (cur < 25) this.updateGrid({ rows: cur + 1 });
     });
 
     // Grosor de línea
@@ -805,8 +816,32 @@ class BocetosApp {
   }
 
   syncGridUI(config) {
-    document.getElementById('rows-value-display').textContent = config.rows;
+    const isSquare = !!config.squareCells;
+    const toggleSquare = document.getElementById('toggle-grid-square');
+    if (toggleSquare) toggleSquare.checked = isSquare;
+
     document.getElementById('cols-value-display').textContent = config.cols;
+
+    const rowsMinusBtn = document.getElementById('btn-rows-minus');
+    const rowsPlusBtn = document.getElementById('btn-rows-plus');
+    const rowsRow = document.getElementById('row-control-rows');
+
+    if (isSquare) {
+      const refW = (this.canvasEngine.refBounds && this.canvasEngine.refBounds.width) || 1;
+      const refH = (this.canvasEngine.refBounds && this.canvasEngine.refBounds.height) || 1;
+      const cellSize = refW / config.cols;
+      const effectiveRows = Math.ceil(refH / cellSize);
+      document.getElementById('rows-value-display').textContent = `${effectiveRows} (auto)`;
+      if (rowsMinusBtn) rowsMinusBtn.disabled = true;
+      if (rowsPlusBtn) rowsPlusBtn.disabled = true;
+      if (rowsRow) rowsRow.classList.add('control-disabled');
+    } else {
+      document.getElementById('rows-value-display').textContent = config.rows;
+      if (rowsMinusBtn) rowsMinusBtn.disabled = false;
+      if (rowsPlusBtn) rowsPlusBtn.disabled = false;
+      if (rowsRow) rowsRow.classList.remove('control-disabled');
+    }
+
     document.getElementById('grid-line-width').value = config.lineWidth;
     document.getElementById('toggle-grid-diagonals').checked = !!config.showDiagonals;
     document.getElementById('toggle-grid-labels').checked = !!config.showLabels;
