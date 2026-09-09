@@ -1,6 +1,7 @@
 /**
  * Bocetos - Canvas Engine Module
  * Motor de renderizado multicapa con soporte HiDPI para iPad
+ * Incluye auto-encaje inteligente por cuadrícula y calibrador de 4 esquinas
  */
 
 class CanvasEngine {
@@ -11,6 +12,8 @@ class CanvasEngine {
     // Imágenes cargadas en memoria
     this.referenceImg = null;
     this.sketchImg = null;
+    this.referenceUrl = null;
+    this.sketchUrl = null;
 
     // Dimensiones lógicas y de referencia
     this.viewport = {
@@ -65,7 +68,11 @@ class CanvasEngine {
       panY: 0
     };
 
-    // Modos de interacción: 'transform_sketch' | 'explore_canvas'
+    // Estado del Calibrador de 4 Esquinas
+    this.isCalibrating = false;
+    this.calibrationCorners = []; // [{x, y}, {x, y}, {x, y}, {x, y}]
+
+    // Modos de interacción: 'transform_sketch' | 'explore_canvas' | 'calibrate_corners'
     this.interactionMode = 'transform_sketch';
 
     this.initResizeObserver();
@@ -75,7 +82,9 @@ class CanvasEngine {
     this.resizeObserver = new ResizeObserver(() => {
       this.resize();
     });
-    this.resizeObserver.observe(this.canvas.parentElement);
+    if (this.canvas.parentElement) {
+      this.resizeObserver.observe(this.canvas.parentElement);
+    }
   }
 
   resize() {
@@ -83,8 +92,14 @@ class CanvasEngine {
     if (!parent) return;
 
     const rect = parent.getBoundingClientRect();
-    this.viewport.width = rect.width;
-    this.viewport.height = rect.height;
+    if (rect.width > 0 && rect.height > 0) {
+      this.viewport.width = rect.width;
+      this.viewport.height = rect.height;
+    } else {
+      // Fallback a ventana si el padre aún no se ha renderizado
+      this.viewport.width = window.innerWidth;
+      this.viewport.height = window.innerHeight - 56;
+    }
     this.viewport.dpr = window.devicePixelRatio || 1;
 
     this.canvas.width = Math.round(this.viewport.width * this.viewport.dpr);
@@ -101,22 +116,41 @@ class CanvasEngine {
    * Calcula el encaje ("contain") de la imagen de referencia dentro del canvas
    */
   calculateRefBounds() {
+    if (this.viewport.width <= 0 || this.viewport.height <= 0) {
+      const parent = this.canvas.parentElement;
+      if (parent) {
+        const rect = parent.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          this.viewport.width = rect.width;
+          this.viewport.height = rect.height;
+          this.viewport.dpr = window.devicePixelRatio || 1;
+          this.canvas.width = Math.round(this.viewport.width * this.viewport.dpr);
+          this.canvas.height = Math.round(this.viewport.height * this.viewport.dpr);
+          this.canvas.style.width = `${this.viewport.width}px`;
+          this.canvas.style.height = `${this.viewport.height}px`;
+        }
+      }
+    }
+
+    const currentW = this.viewport.width > 0 ? this.viewport.width : (window.innerWidth || 800);
+    const currentH = this.viewport.height > 0 ? this.viewport.height : (window.innerHeight - 56 || 600);
+
     if (!this.referenceImg) {
       this.refBounds = {
-        x: this.viewport.width * 0.1,
-        y: this.viewport.height * 0.1,
-        width: this.viewport.width * 0.8,
-        height: this.viewport.height * 0.8
+        x: currentW * 0.1,
+        y: currentH * 0.1,
+        width: currentW * 0.8,
+        height: currentH * 0.8
       };
       return;
     }
 
-    const padding = 32; // margen en px
-    const availW = Math.max(100, this.viewport.width - padding * 2);
-    const availH = Math.max(100, this.viewport.height - padding * 2);
+    const padding = 28; // margen ergonómico
+    const availW = Math.max(100, currentW - padding * 2);
+    const availH = Math.max(100, currentH - padding * 2);
 
-    const imgW = this.referenceImg.naturalWidth || this.referenceImg.width;
-    const imgH = this.referenceImg.naturalHeight || this.referenceImg.height;
+    const imgW = this.referenceImg.naturalWidth || this.referenceImg.width || 1;
+    const imgH = this.referenceImg.naturalHeight || this.referenceImg.height || 1;
 
     const imgAspect = imgW / imgH;
     const availAspect = availW / availH;
@@ -131,19 +165,22 @@ class CanvasEngine {
       drawW = availH * imgAspect;
     }
 
-    const x = (this.viewport.width - drawW) / 2;
-    const y = (this.viewport.height - drawH) / 2;
+    const x = (currentW - drawW) / 2;
+    const y = (currentH - drawH) / 2;
 
     this.refBounds = { x, y, width: drawW, height: drawH };
   }
 
   async loadReferenceBlob(blob) {
     return new Promise((resolve, reject) => {
-      const img = new Image();
+      if (this.referenceUrl) {
+        URL.revokeObjectURL(this.referenceUrl);
+      }
       const url = URL.createObjectURL(blob);
+      this.referenceUrl = url;
 
+      const img = new Image();
       img.onload = () => {
-        URL.revokeObjectURL(url);
         this.referenceImg = img;
         this.calculateRefBounds();
         this.render();
@@ -151,7 +188,6 @@ class CanvasEngine {
       };
 
       img.onerror = (err) => {
-        URL.revokeObjectURL(url);
         reject(err);
       };
 
@@ -161,18 +197,20 @@ class CanvasEngine {
 
   async loadSketchBlob(blob) {
     return new Promise((resolve, reject) => {
-      const img = new Image();
+      if (this.sketchUrl) {
+        URL.revokeObjectURL(this.sketchUrl);
+      }
       const url = URL.createObjectURL(blob);
+      this.sketchUrl = url;
 
+      const img = new Image();
       img.onload = () => {
-        URL.revokeObjectURL(url);
         this.sketchImg = img;
         this.render();
         resolve(img);
       };
 
       img.onerror = (err) => {
-        URL.revokeObjectURL(url);
         reject(err);
       };
 
@@ -182,6 +220,7 @@ class CanvasEngine {
 
   clearSketch() {
     this.sketchImg = null;
+    this.isCalibrating = false;
     this.render();
   }
 
@@ -196,8 +235,9 @@ class CanvasEngine {
   }
 
   setLayerVisibility(layerName, visible) {
-    if (this.layers[layerName] !== undefined) {
-      this.layers[layerName] = visible;
+    const key = layerName.replace('Visible', '');
+    if (this.layers[key] !== undefined) {
+      this.layers[key] = !!visible;
       this.render();
     }
   }
@@ -222,12 +262,224 @@ class CanvasEngine {
   }
 
   /* ========================================================
+   * AUTO-ENCAJE INTELIGENTE POR CUADRÍCULA (AUTO-ALIGN)
+   * ======================================================== */
+
+  /**
+   * Encaja automáticamente el boceto tomando como referencia la cuadrícula
+   * de la foto original y los bordes/líneas del dibujo capturado.
+   */
+  autoAlignSketchWithGrid() {
+    if (!this.sketchImg || !this.referenceImg) return false;
+
+    try {
+      const sketchNatW = this.sketchImg.naturalWidth || this.sketchImg.width || 1;
+      const sketchNatH = this.sketchImg.naturalHeight || this.sketchImg.height || 1;
+
+      // 1. Crear canvas auxiliar de análisis rápido
+      const sampleW = 380;
+      const sampleH = Math.round((sampleW * sketchNatH) / sketchNatW);
+
+      const offCanvas = document.createElement('canvas');
+      offCanvas.width = sampleW;
+      offCanvas.height = sampleH;
+      const offCtx = offCanvas.getContext('2d', { willReadFrequently: true });
+      offCtx.drawImage(this.sketchImg, 0, 0, sampleW, sampleH);
+
+      const imgData = offCtx.getImageData(0, 0, sampleW, sampleH);
+      const data = imgData.data;
+
+      // 2. Grayscale & Gradiente de bordes (filtro Sobel ligero)
+      const gray = new Float32Array(sampleW * sampleH);
+      for (let i = 0; i < data.length; i += 4) {
+        gray[i / 4] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      }
+
+      const colEdges = new Float32Array(sampleW);
+      const rowEdges = new Float32Array(sampleH);
+
+      for (let y = 1; y < sampleH - 1; y++) {
+        for (let x = 1; x < sampleW - 1; x++) {
+          const idx = y * sampleW + x;
+          const gx = Math.abs(gray[idx + 1] - gray[idx - 1]);
+          const gy = Math.abs(gray[idx + sampleW] - gray[idx - sampleW]);
+          colEdges[x] += gx;
+          rowEdges[y] += gy;
+        }
+      }
+
+      // 3. Detección de límites de la cuadrícula o papel dibujado
+      let maxCol = 0;
+      for (let x = 0; x < sampleW; x++) if (colEdges[x] > maxCol) maxCol = colEdges[x];
+      const thresholdCol = maxCol * 0.32;
+
+      let minX = Math.round(sampleW * 0.08);
+      let maxX = Math.round(sampleW * 0.92);
+
+      for (let x = 6; x < sampleW * 0.45; x++) {
+        if (colEdges[x] > thresholdCol) {
+          minX = x;
+          break;
+        }
+      }
+      for (let x = sampleW - 7; x > sampleW * 0.55; x--) {
+        if (colEdges[x] > thresholdCol) {
+          maxX = x;
+          break;
+        }
+      }
+
+      let maxRow = 0;
+      for (let y = 0; y < sampleH; y++) if (rowEdges[y] > maxRow) maxRow = rowEdges[y];
+      const thresholdRow = maxRow * 0.32;
+
+      let minY = Math.round(sampleH * 0.08);
+      let maxY = Math.round(sampleH * 0.92);
+
+      for (let y = 6; y < sampleH * 0.45; y++) {
+        if (rowEdges[y] > thresholdRow) {
+          minY = y;
+          break;
+        }
+      }
+      for (let y = sampleH - 7; y > sampleH * 0.55; y--) {
+        if (rowEdges[y] > thresholdRow) {
+          maxY = y;
+          break;
+        }
+      }
+
+      // Validar dimensiones detectadas
+      if ((maxX - minX) < sampleW * 0.25 || (maxY - minY) < sampleH * 0.25) {
+        minX = Math.round(sampleW * 0.08);
+        maxX = Math.round(sampleW * 0.92);
+        minY = Math.round(sampleH * 0.08);
+        maxY = Math.round(sampleH * 0.92);
+      }
+
+      // 4. Calcular transformación matemática para encajar en refBounds
+      const { width: refW, height: refH } = this.refBounds;
+      const sketchAspect = sketchNatW / sketchNatH;
+      const refAspect = refW / refH;
+
+      let baseW, baseH;
+      if (sketchAspect > refAspect) {
+        baseW = refW;
+        baseH = refW / sketchAspect;
+      } else {
+        baseH = refH;
+        baseW = refH * sketchAspect;
+      }
+
+      const detectedGridW = ((maxX - minX) / sampleW) * baseW;
+      const detectedGridH = ((maxY - minY) / sampleH) * baseH;
+
+      const scaleX = refW / detectedGridW;
+      const scaleY = refH / detectedGridH;
+      const newScale = +(Math.max(0.3, Math.min(4.5, (scaleX + scaleY) / 2))).toFixed(3);
+
+      const normCenterX = (((minX + maxX) / 2) / sampleW - 0.5) * baseW;
+      const normCenterY = (((minY + maxY) / 2) / sampleH - 0.5) * baseH;
+
+      const newOffsetX = Math.round(-normCenterX * newScale);
+      const newOffsetY = Math.round(-normCenterY * newScale);
+
+      this.setSketchTransform({
+        scale: newScale,
+        offsetX: newOffsetX,
+        offsetY: newOffsetY,
+        rotation: 0
+      });
+
+      return true;
+    } catch (err) {
+      console.warn('Auto-encaje por cuadrícula falló:', err);
+      return false;
+    }
+  }
+
+  /* ========================================================
+   * CALIBRADOR INTERACTIVO DE 4 ESQUINAS
+   * ======================================================== */
+
+  startCalibration() {
+    if (!this.sketchImg) return;
+    this.isCalibrating = true;
+
+    // Inicializar las 4 esquinas según el estado actual de refBounds
+    const { x, y, width: w, height: h } = this.refBounds;
+    this.calibrationCorners = [
+      { x: x + w * 0.05, y: y + h * 0.05 }, // 0: Top-Left
+      { x: x + w * 0.95, y: y + h * 0.05 }, // 1: Top-Right
+      { x: x + w * 0.95, y: y + h * 0.95 }, // 2: Bottom-Right
+      { x: x + w * 0.05, y: y + h * 0.95 }  // 3: Bottom-Left
+    ];
+
+    this.render();
+  }
+
+  applyCalibrationCorners() {
+    if (!this.isCalibrating || this.calibrationCorners.length !== 4) {
+      this.isCalibrating = false;
+      this.render();
+      return;
+    }
+
+    const [p0, p1, p2, p3] = this.calibrationCorners;
+    const { x: refX, y: refY, width: refW, height: refH } = this.refBounds;
+
+    // Centro del cuadrilátero marcado por el usuario
+    const quadCenterX = (p0.x + p1.x + p2.x + p3.x) / 4;
+    const quadCenterY = (p0.y + p1.y + p2.y + p3.y) / 4;
+
+    // Ancho y alto medios del cuadrilátero marcado
+    const topW = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+    const bottomW = Math.hypot(p2.x - p3.x, p2.y - p3.y);
+    const avgW = (topW + bottomW) / 2 || 1;
+
+    const leftH = Math.hypot(p3.x - p0.x, p3.y - p0.y);
+    const rightH = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+    const avgH = (leftH + rightH) / 2 || 1;
+
+    // Ángulo de inclinación en grados
+    const angleRad = Math.atan2(p1.y - p0.y, p1.x - p0.x);
+    const angleDeg = Math.round((angleRad * 180) / Math.PI);
+
+    // Factor de escala necesario
+    const scaleFactor = ((refW / avgW) + (refH / avgH)) / 2;
+    const newScale = +(Math.max(0.2, Math.min(5.0, this.sketchTransform.scale * scaleFactor))).toFixed(3);
+
+    // Centro de referencia
+    const refCenterX = refX + refW / 2;
+    const refCenterY = refY + refH / 2;
+
+    const newOffsetX = Math.round(this.sketchTransform.offsetX + (refCenterX - quadCenterX));
+    const newOffsetY = Math.round(this.sketchTransform.offsetY + (refCenterY - quadCenterY));
+    const newRotation = Math.round((this.sketchTransform.rotation - angleDeg) % 360);
+
+    this.setSketchTransform({
+      scale: newScale,
+      offsetX: newOffsetX,
+      offsetY: newOffsetY,
+      rotation: newRotation
+    });
+
+    this.isCalibrating = false;
+    this.render();
+  }
+
+  cancelCalibration() {
+    this.isCalibrating = false;
+    this.render();
+  }
+
+  /* ========================================================
    * PIPELINE DE RENDERIZADO
    * ======================================================== */
 
   render() {
     const ctx = this.ctx;
-    const dpr = this.viewport.dpr;
+    const dpr = this.viewport.dpr || 1;
     const w = this.viewport.width;
     const h = this.viewport.height;
 
@@ -263,11 +515,17 @@ class CanvasEngine {
       this.drawGridLayer(ctx);
     }
 
+    // 4. CAPA DE CALIBRACIÓN DE 4 ESQUINAS (SI ESTÁ ACTIVA)
+    if (this.isCalibrating) {
+      this.drawCalibrationLayer(ctx);
+    }
+
     ctx.restore();
   }
 
   drawReferenceLayer(ctx) {
     const { x, y, width, height } = this.refBounds;
+    if (width <= 0 || height <= 0) return;
 
     ctx.save();
     // Sombra suave para separar la referencia del fondo
@@ -384,10 +642,10 @@ class CanvasEngine {
     const { x: refX, y: refY, width: refW, height: refH } = this.refBounds;
     const { scale, offsetX, offsetY, rotation, flipH, flipV, opacity, blendMode } = this.sketchTransform;
 
-    const sketchW = this.sketchImg.naturalWidth || this.sketchImg.width;
-    const sketchH = this.sketchImg.naturalHeight || this.sketchImg.height;
+    const sketchW = this.sketchImg.naturalWidth || this.sketchImg.width || 1;
+    const sketchH = this.sketchImg.naturalHeight || this.sketchImg.height || 1;
 
-    // Calcular tamaño base del boceto para que coincida inicialmente con el tamaño de referencia
+    // Calcular tamaño base del boceto para coincidir proporcionalmente
     const sketchAspect = sketchW / sketchH;
     const refAspect = refW / refH;
 
@@ -402,12 +660,13 @@ class CanvasEngine {
 
     ctx.save();
 
-    // Modo de fusión para resaltar las líneas del boceto sobre la referencia
-    // (ej. 'difference', 'multiply', 'screen', 'normal')
-    ctx.globalCompositeOperation = blendMode || 'difference';
-    ctx.globalAlpha = Math.max(0, Math.min(1, opacity));
+    // Modo de fusión: si la referencia está activa y cargada debajo, usar blendMode (difference/multiply).
+    // Si la referencia está oculta o no existe, usar 'source-over' para que el boceto sea 100% visible sobre el fondo.
+    const hasReferenceBelow = !!(this.layers.reference && this.referenceImg);
+    ctx.globalCompositeOperation = hasReferenceBelow ? (blendMode || 'difference') : 'source-over';
+    ctx.globalAlpha = Math.max(0.05, Math.min(1, opacity));
 
-    // Centro de rotación y escalado: centro de la referencia + offset
+    // Centro de rotación y escalado
     const centerX = refX + refW / 2 + offsetX;
     const centerY = refY + refH / 2 + offsetY;
 
@@ -423,8 +682,67 @@ class CanvasEngine {
     const scaleY = (flipV ? -1 : 1) * scale;
     ctx.scale(scaleX, scaleY);
 
-    // Dibujar boceto centrado en (0, 0)
+    // Dibujar boceto centrado
     ctx.drawImage(this.sketchImg, -baseW / 2, -baseH / 2, baseW, baseH);
+
+    ctx.restore();
+  }
+
+  drawCalibrationLayer(ctx) {
+    if (!this.isCalibrating || this.calibrationCorners.length !== 4) return;
+
+    const corners = this.calibrationCorners;
+    ctx.save();
+
+    // Líneas del cuadrilátero guía
+    ctx.strokeStyle = '#00e5ff';
+    ctx.lineWidth = 2.5;
+    ctx.setLineDash([6, 6]);
+    ctx.beginPath();
+    ctx.moveTo(corners[0].x, corners[0].y);
+    ctx.lineTo(corners[1].x, corners[1].y);
+    ctx.lineTo(corners[2].x, corners[2].y);
+    ctx.lineTo(corners[3].x, corners[3].y);
+    ctx.closePath();
+    ctx.stroke();
+
+    // Relleno suave de área
+    ctx.fillStyle = 'rgba(0, 229, 255, 0.08)';
+    ctx.fill();
+
+    // Manijas en las 4 esquinas táctiles (iPad ergonomía)
+    const labels = ['1. Sup-Izq', '2. Sup-Der', '3. Inf-Der', '4. Inf-Izq'];
+    corners.forEach((pt, idx) => {
+      ctx.setLineDash([]);
+
+      // Halo exterior
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 22, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(0, 229, 255, 0.4)';
+      ctx.fill();
+
+      // Círculo botón táctil
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 14, 0, Math.PI * 2);
+      ctx.fillStyle = '#00e5ff';
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+
+      // Punto blanco central
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 4, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+
+      // Texto de la esquina
+      ctx.font = 'bold 12px -apple-system, sans-serif';
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      const textY = idx < 2 ? pt.y - 28 : pt.y + 36;
+      ctx.fillText(labels[idx], pt.x, textY);
+    });
 
     ctx.restore();
   }
@@ -440,4 +758,3 @@ class CanvasEngine {
 }
 
 window.CanvasEngine = CanvasEngine;
-

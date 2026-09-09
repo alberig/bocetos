@@ -66,8 +66,8 @@ class BocetosDB {
       const img = new Image();
 
       img.onload = () => {
-        URL.revokeObjectURL(url);
-        let { width, height } = img;
+        let width = img.naturalWidth || img.width || 1;
+        let height = img.naturalHeight || img.height || 1;
 
         // Calcular escalado manteniendo relación de aspecto
         if (width > maxDimension || height > maxDimension) {
@@ -90,6 +90,9 @@ class BocetosDB {
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
         ctx.drawImage(img, 0, 0, width, height);
+
+        // Revocar URL del objeto tras pintar en el canvas
+        URL.revokeObjectURL(url);
 
         canvas.toBlob(
           (blob) => {
@@ -191,9 +194,9 @@ class BocetosDB {
         visible: true
       },
       layersState: {
-        referenceVisible: true,
-        gridVisible: true,
-        sketchVisible: true
+        reference: true,
+        grid: true,
+        sketch: true
       },
       lastTransform: {
         scale: 1,

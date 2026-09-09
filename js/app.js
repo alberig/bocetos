@@ -60,25 +60,46 @@ class BocetosApp {
     studioEl.classList.add('active');
     studioEl.classList.remove('clean-mode');
 
+    // Forzar actualización inmediata de dimensiones en cuanto el contenedor es visible
+    this.canvasEngine.resize();
+
     // Actualizar título del proyecto
     document.getElementById('project-title-text').textContent = project.name;
 
-    // Configurar Cuadrícula desde el proyecto guardado
-    if (project.gridConfig) {
-      this.canvasEngine.setGridConfig(project.gridConfig);
-      this.syncGridUI(project.gridConfig);
-    }
+    // Configurar Cuadrícula desde el proyecto guardado o valores por defecto visibles
+    const gridCfg = project.gridConfig || {
+      rows: 4,
+      cols: 4,
+      color: '#00e5ff',
+      lineWidth: 2,
+      showDiagonals: false,
+      showLabels: true,
+      visible: true
+    };
+    gridCfg.visible = true; // Asegurar que las guías siempre estén visibles al empezar
+    this.canvasEngine.setGridConfig(gridCfg);
+    this.syncGridUI(gridCfg);
 
-    // Configurar Estado de Capas
-    if (project.layersState) {
-      this.canvasEngine.layers = { ...project.layersState };
-      this.syncLayerTogglesUI();
-    }
+    // Normalizar layersState asegurando compatibilidad con nombres antiguos y nuevos
+    const rawLayers = project.layersState || {};
+    this.canvasEngine.layers = {
+      reference: rawLayers.reference !== undefined ? !!rawLayers.reference : (rawLayers.referenceVisible !== undefined ? !!rawLayers.referenceVisible : true),
+      grid: rawLayers.grid !== undefined ? !!rawLayers.grid : (rawLayers.gridVisible !== undefined ? !!rawLayers.gridVisible : true),
+      sketch: rawLayers.sketch !== undefined ? !!rawLayers.sketch : (rawLayers.sketchVisible !== undefined ? !!rawLayers.sketchVisible : true)
+    };
+    // Forzar que la referencia y la cuadrícula estén activadas al ingresar para empezar el dibujo
+    this.canvasEngine.layers.reference = true;
+    this.canvasEngine.layers.grid = true;
+    this.canvasEngine.gridConfig.visible = true;
+    this.syncLayerTogglesUI();
 
     // Cargar Imagen de Referencia (Capa 1)
     if (project.referenceImageBlob) {
       await this.canvasEngine.loadReferenceBlob(project.referenceImageBlob);
     }
+
+    // Asegurar medición con la imagen ya cargada
+    this.canvasEngine.resize();
 
     // Cargar Iteraciones del Proyecto (Timeline)
     await this.loadProjectIterations(project.id);
@@ -248,7 +269,20 @@ class BocetosApp {
       this.renderTimeline();
       await this.selectIteration(newIteration);
 
-      this.showToast(`¡Versión ${newIteration.versionNumber} añadida con alineación previa!`);
+      // Si es la primera versión o no hay transformación previa calibrada,
+      // encajar automáticamente tomando como referencia la cuadrícula
+      if (newIteration.versionNumber === 1 || !inheritedTransform || (inheritedTransform.scale === 1 && inheritedTransform.offsetX === 0 && inheritedTransform.offsetY === 0)) {
+        const aligned = this.canvasEngine.autoAlignSketchWithGrid();
+        if (aligned) {
+          this.syncSketchTransformUI(this.canvasEngine.sketchTransform);
+          await window.bocetosDB.updateIterationTransform(newIteration.id, this.canvasEngine.sketchTransform);
+          this.showToast(`✨ ¡Versión ${newIteration.versionNumber} encajada automáticamente con la cuadrícula!`);
+        } else {
+          this.showToast(`¡Versión ${newIteration.versionNumber} cargada!`);
+        }
+      } else {
+        this.showToast(`¡Versión ${newIteration.versionNumber} añadida con alineación previa!`);
+      }
     } catch (err) {
       console.error('Error al procesar foto de boceto:', err);
       this.showToast('Error al procesar la foto');
@@ -264,6 +298,32 @@ class BocetosApp {
 
     canvas.addEventListener('pointerdown', (e) => {
       canvas.setPointerCapture(e.pointerId);
+
+      // Si el modo de calibración de 4 esquinas está activo, verificar si tocó una esquina
+      if (this.canvasEngine.isCalibrating && this.canvasEngine.calibrationCorners.length === 4) {
+        const rect = canvas.getBoundingClientRect();
+        const touchX = e.clientX - rect.left;
+        const touchY = e.clientY - rect.top;
+
+        let closestIdx = -1;
+        let minDist = 48; // Área táctil generosa para dedos / Apple Pencil
+        this.canvasEngine.calibrationCorners.forEach((pt, idx) => {
+          const d = Math.hypot(pt.x - touchX, pt.y - touchY);
+          if (d < minDist) {
+            minDist = d;
+            closestIdx = idx;
+          }
+        });
+
+        if (closestIdx !== -1) {
+          this.activeCornerDrag = {
+            pointerId: e.pointerId,
+            index: closestIdx
+          };
+          return;
+        }
+      }
+
       this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
       if (this.activePointers.size === 1) {
@@ -298,6 +358,18 @@ class BocetosApp {
     });
 
     canvas.addEventListener('pointermove', (e) => {
+      // Movimiento de esquina en modo calibración
+      if (this.activeCornerDrag && this.activeCornerDrag.pointerId === e.pointerId) {
+        const rect = canvas.getBoundingClientRect();
+        const curIdx = this.activeCornerDrag.index;
+        this.canvasEngine.calibrationCorners[curIdx] = {
+          x: Math.round(e.clientX - rect.left),
+          y: Math.round(e.clientY - rect.top)
+        };
+        this.canvasEngine.render();
+        return;
+      }
+
       if (!this.activePointers.has(e.pointerId) || !this.gestureStart) return;
 
       this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -348,6 +420,10 @@ class BocetosApp {
     });
 
     const pointerEndHandler = (e) => {
+      if (this.activeCornerDrag && this.activeCornerDrag.pointerId === e.pointerId) {
+        this.activeCornerDrag = null;
+      }
+
       this.activePointers.delete(e.pointerId);
       if (this.activePointers.size === 0) {
         this.gestureStart = null;
@@ -388,27 +464,25 @@ class BocetosApp {
     });
 
     // 3. Toggles de Visibilidad de Capas
-    document.getElementById('chip-toggle-ref').addEventListener('click', (e) => {
-      const btn = e.currentTarget;
-      const isVis = !btn.classList.contains('active');
-      btn.classList.toggle('active', isVis);
+    document.getElementById('chip-toggle-ref').addEventListener('click', () => {
+      const isVis = !this.canvasEngine.layers.reference;
       this.canvasEngine.setLayerVisibility('reference', isVis);
+      this.syncLayerTogglesUI();
       this.saveLayerState();
     });
 
-    document.getElementById('chip-toggle-grid').addEventListener('click', (e) => {
-      const btn = e.currentTarget;
-      const isVis = !btn.classList.contains('active');
-      btn.classList.toggle('active', isVis);
+    document.getElementById('chip-toggle-grid').addEventListener('click', () => {
+      const isVis = !(this.canvasEngine.layers.grid && this.canvasEngine.gridConfig.visible);
+      this.canvasEngine.setLayerVisibility('grid', isVis);
       this.canvasEngine.setGridConfig({ visible: isVis });
+      this.syncLayerTogglesUI();
       this.saveLayerState();
     });
 
-    document.getElementById('chip-toggle-sketch').addEventListener('click', (e) => {
-      const btn = e.currentTarget;
-      const isVis = !btn.classList.contains('active');
-      btn.classList.toggle('active', isVis);
+    document.getElementById('chip-toggle-sketch').addEventListener('click', () => {
+      const isVis = !this.canvasEngine.layers.sketch;
       this.canvasEngine.setLayerVisibility('sketch', isVis);
+      this.syncLayerTogglesUI();
       this.saveLayerState();
     });
 
@@ -551,6 +625,68 @@ class BocetosApp {
   }
 
   bindSketchControls() {
+    // Auto-Encajar Cuadrícula
+    const autoAlignAction = () => {
+      if (!this.canvasEngine.sketchImg) {
+        this.showToast('Toma o sube una foto del boceto primero');
+        return;
+      }
+      this.showToast('Analizando cuadrícula y encajando...');
+      const ok = this.canvasEngine.autoAlignSketchWithGrid();
+      if (ok) {
+        this.syncSketchTransformUI(this.canvasEngine.sketchTransform);
+        this.scheduleAutoSave();
+        this.showToast('✨ ¡Boceto encajado con la cuadrícula!');
+      } else {
+        this.showToast('No se detectaron líneas claras. Usa "4 Esquinas" para ajuste manual.');
+      }
+    };
+
+    const btnAutoAlign = document.getElementById('btn-auto-align-grid');
+    if (btnAutoAlign) btnAutoAlign.addEventListener('click', autoAlignAction);
+
+    const btnQuickAutoAlign = document.getElementById('btn-quick-autoalign');
+    if (btnQuickAutoAlign) btnQuickAutoAlign.addEventListener('click', autoAlignAction);
+
+    // Calibrador de 4 Esquinas
+    const calibBanner = document.getElementById('calibration-banner');
+    const btnCalibrate = document.getElementById('btn-calibrate-corners');
+    if (btnCalibrate) {
+      btnCalibrate.addEventListener('click', () => {
+        if (!this.canvasEngine.sketchImg) {
+          this.showToast('Toma o sube una foto del boceto primero');
+          return;
+        }
+        // Cerrar paneles flotantes para despejar el lienzo
+        document.querySelectorAll('.floating-side-panel').forEach(p => p.classList.remove('open'));
+        document.querySelectorAll('.tool-tab-btn').forEach(b => b.classList.remove('active'));
+
+        this.canvasEngine.startCalibration();
+        if (calibBanner) calibBanner.classList.add('active');
+        this.showToast('🎯 Arrastra las 4 esquinas a la cuadrícula de tu papel');
+      });
+    }
+
+    const btnApplyCalib = document.getElementById('btn-apply-calibration');
+    if (btnApplyCalib) {
+      btnApplyCalib.addEventListener('click', () => {
+        this.canvasEngine.applyCalibrationCorners();
+        if (calibBanner) calibBanner.classList.remove('active');
+        this.syncSketchTransformUI(this.canvasEngine.sketchTransform);
+        this.scheduleAutoSave();
+        this.showToast('✓ ¡Boceto encajado con precisión milimétrica!');
+      });
+    }
+
+    const btnCancelCalib = document.getElementById('btn-cancel-calibration');
+    if (btnCancelCalib) {
+      btnCancelCalib.addEventListener('click', () => {
+        this.canvasEngine.cancelCalibration();
+        if (calibBanner) calibBanner.classList.remove('active');
+        this.showToast('Calibración cancelada');
+      });
+    }
+
     // Opacidad Slider
     const opacitySlider = document.getElementById('sketch-opacity-slider');
     const opacityValText = document.getElementById('sketch-opacity-value');
@@ -648,9 +784,13 @@ class BocetosApp {
 
   syncLayerTogglesUI() {
     const l = this.canvasEngine.layers;
-    document.getElementById('chip-toggle-ref').classList.toggle('active', l.reference);
-    document.getElementById('chip-toggle-grid').classList.toggle('active', this.canvasEngine.gridConfig.visible);
-    document.getElementById('chip-toggle-sketch').classList.toggle('active', l.sketch);
+    const refActive = !!l.reference;
+    const gridActive = !!(l.grid && this.canvasEngine.gridConfig.visible);
+    const sketchActive = !!l.sketch;
+
+    document.getElementById('chip-toggle-ref').classList.toggle('active', refActive);
+    document.getElementById('chip-toggle-grid').classList.toggle('active', gridActive);
+    document.getElementById('chip-toggle-sketch').classList.toggle('active', sketchActive);
   }
 
   saveLayerState() {

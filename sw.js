@@ -1,24 +1,26 @@
 /**
  * Bocetos - Service Worker (Offline Support)
+ * Estrategia Network First: actualización instantánea de cambios con respaldo offline
  */
 
-const CACHE_NAME = 'bocetos-cache-v1';
+const CACHE_NAME = 'bocetos-cache-v2';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
-  './styles.css',
+  './styles.css?v=2',
   './manifest.json',
   './icons/icon.svg',
-  './js/db.js',
-  './js/canvas.js',
-  './js/app.js'
+  './js/db.js?v=2',
+  './js/canvas.js?v=2',
+  './js/app.js?v=2'
 ];
 
 self.addEventListener('install', (event) => {
+  self.skipWaiting();
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
       return cache.addAll(ASSETS_TO_CACHE);
-    }).then(() => self.skipWaiting())
+    })
   );
 });
 
@@ -28,6 +30,7 @@ self.addEventListener('activate', (event) => {
       return Promise.all(
         keys.map((key) => {
           if (key !== CACHE_NAME) {
+            console.log('Eliminando caché antigua:', key);
             return caches.delete(key);
           }
         })
@@ -37,14 +40,11 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  // Estrategia Cache First con Network Fallback
+  // Estrategia Network First: siempre busca el código más reciente del servidor.
+  // Solo usa la caché si el usuario está sin conexión (en el taller o sin wifi).
   event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-      return fetch(event.request).then((networkResponse) => {
-        // Solo cachear respuestas válidas del mismo origen
+    fetch(event.request)
+      .then((networkResponse) => {
         if (networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
           const responseToCache = networkResponse.clone();
           caches.open(CACHE_NAME).then((cache) => {
@@ -52,11 +52,11 @@ self.addEventListener('fetch', (event) => {
           });
         }
         return networkResponse;
-      }).catch(() => {
-        // Fallback si no hay conexión
-        return caches.match('./index.html');
-      });
-    })
+      })
+      .catch(() => {
+        return caches.match(event.request).then((cached) => {
+          return cached || caches.match('./index.html');
+        });
+      })
   );
 });
-
